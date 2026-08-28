@@ -1,6 +1,8 @@
 import { Canvas, useFrame } from '@react-three/fiber'
-import { OrbitControls } from '@react-three/drei'
-import { useRef, useState } from 'react'
+import { OrbitControls, useGLTF } from '@react-three/drei'
+import { Physics, RigidBody } from '@react-three/rapier'
+import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing'
+import { useRef } from 'react'
 import * as THREE from 'three'
 
 // ---------- Rideau (plan ondulé avec des "plis" via la géométrie) ----------
@@ -8,7 +10,6 @@ function CurtainPanel({ position, side }) {
   const meshRef = useRef()
   const geometry = useRef()
 
-  // Génère un plan avec des plis verticaux (sinusoïde sur X)
   const segmentsX = 24
   const segmentsY = 1
   const width = 3.2
@@ -34,7 +35,6 @@ function CurtainPanel({ position, side }) {
   )
 }
 
-// ---------- Bandeau supérieur du rideau (la "frise") ----------
 function ValanceTop() {
   return (
     <mesh position={[0, 4.3, -1.5]} castShadow>
@@ -44,24 +44,26 @@ function ValanceTop() {
   )
 }
 
-// ---------- Plateau en bois ----------
+// ---------- Sol solide : RigidBody fixe, forme "cuboid" fine (une planeGeometry n'a pas de volume) ----------
 function StageFloor() {
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.8, 0]} receiveShadow>
-      <planeGeometry args={[14, 10]} />
-      <meshStandardMaterial color="#3b2a1d" roughness={0.75} metalness={0.05} />
-    </mesh>
+    <RigidBody type="fixed" colliders="cuboid" friction={0.8}>
+      <mesh position={[0, -1.8, 0]} receiveShadow>
+        <boxGeometry args={[14, 0.05, 10]} />
+        <meshStandardMaterial color="#3b2a1d" roughness={0.75} metalness={0.05} />
+      </mesh>
+    </RigidBody>
   )
 }
 
-// Lattes de bois du plateau (fines boîtes pour l'effet planches)
+// Lattes de bois décoratives (purement visuelles, pas de collision propre : elles reposent sur le même niveau que le sol physique)
 function FloorPlanks() {
   const planks = []
   const count = 18
   for (let i = 0; i < count; i++) {
     planks.push(
-      <mesh key={i} position={[-7 + (i * 14) / count, -1.795, 0]} receiveShadow>
-        <boxGeometry args={[14 / count - 0.03, 0.02, 10]} />
+      <mesh key={i} position={[-7 + (i * 14) / count, -1.775, 0]}>
+        <boxGeometry args={[14 / count - 0.03, 0.005, 10]} />
         <meshStandardMaterial color={i % 2 === 0 ? '#4a3524' : '#40301f'} roughness={0.8} />
       </mesh>
     )
@@ -69,8 +71,26 @@ function FloorPlanks() {
   return <group>{planks}</group>
 }
 
-// ---------- Projecteur (spot animé, cône visible) ----------
-function Spotlight({ position, target, color, phase }) {
+// ---------- Modèle GLTF soumis à la gravité ----------
+function FallingDuck() {
+  const { scene } = useGLTF('/duck.glb')
+
+  return (
+    <RigidBody
+      position={[0, 5, 0]}
+      rotation={[0, Math.PI / 3, 0]}
+      colliders="hull"
+      restitution={0.4}
+      friction={0.6}
+      angularDamping={0.5}
+    >
+      <primitive object={scene} scale={0.012} castShadow />
+    </RigidBody>
+  )
+}
+
+// ---------- Projecteur : spot animé + petite sphère émissive (accroche le Bloom) ----------
+function Spotlight({ position, color, phase }) {
   const lightRef = useRef()
   const coneRef = useRef()
 
@@ -97,6 +117,10 @@ function Spotlight({ position, target, color, phase }) {
         distance={18}
         castShadow
       />
+      <mesh>
+        <sphereGeometry args={[0.14, 16, 16]} />
+        <meshBasicMaterial color={color} toneMapped={false} />
+      </mesh>
       <mesh ref={coneRef} position={[0, -0.3, 0]}>
         <coneGeometry args={[0.15, 0.5, 16, 1, true]} />
         <meshStandardMaterial color="#111" side={THREE.DoubleSide} />
@@ -105,17 +129,15 @@ function Spotlight({ position, target, color, phase }) {
   )
 }
 
-// ---------- Halo de lumière au sol sous chaque projecteur ----------
 function LightPool({ color }) {
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.78, 0]}>
       <circleGeometry args={[1.6, 32]} />
-      <meshBasicMaterial color={color} transparent opacity={0.12} />
+      <meshBasicMaterial color={color} transparent opacity={0.35} toneMapped={false} />
     </mesh>
   )
 }
 
-// ---------- Rangée de sièges suggérée en fond de salle (silhouettes simples) ----------
 function AudienceHint() {
   const rows = []
   for (let r = 0; r < 3; r++) {
@@ -131,13 +153,26 @@ function AudienceHint() {
   return <group>{rows}</group>
 }
 
-export default function TheaterScene() {
+export default function Scene() {
   return (
     <Canvas shadows camera={{ position: [0, 1.5, 11], fov: 50 }}>
       <fog attach="fog" args={['#050308', 10, 26]} />
-      <ambientLight intensity={0.18} color="#3a2030" />
 
-      <StageFloor />
+      {/* --- Éclairage : ambiante pour déboucher les ombres, directionnelle pour le volume --- */}
+      <ambientLight intensity={0.25} color="#3a2030" />
+      <directionalLight
+        position={[4, 8, 6]}
+        intensity={1.1}
+        color="#fff2e0"
+        castShadow
+        shadow-mapSize={[2048, 2048]}
+      />
+
+      <Physics gravity={[0, -9.81, 0]}>
+        <StageFloor />
+        <FallingDuck />
+      </Physics>
+
       <FloorPlanks />
 
       <ValanceTop />
@@ -161,6 +196,18 @@ export default function TheaterScene() {
         maxPolarAngle={Math.PI * 0.55}
         target={[0, 0, 0]}
       />
+
+      <EffectComposer>
+        <Bloom
+          luminanceThreshold={0.25}
+          luminanceSmoothing={0.9}
+          intensity={1.3}
+          mipmapBlur
+        />
+        <Vignette eskil={false} offset={0.25} darkness={0.85} />
+      </EffectComposer>
     </Canvas>
   )
 }
+
+useGLTF.preload('/duck.glb')
